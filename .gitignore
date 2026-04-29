@@ -5,6 +5,8 @@ npm-debug.log
 
 # Python
 __pycache__/
+.venv/
+venv/
 *.py[cod]
 *.so
 .Python
