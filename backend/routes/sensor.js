@@ -139,4 +139,69 @@ router.get("/predict-24hr-data", async (req, res) => {
     }
 });
 
+// 🔹 One-call route: live Blynk fetch + ML prediction + spraying condition
+router.get("/live-condition", async (req, res) => {
+  try {
+    let temperature;
+    let humidity;
+    let source = "blynk-live";
+
+    try {
+      const blynkResponse = await axios.get(BLYNK_API);
+      temperature = parseFloat(blynkResponse.data.v2);
+      humidity = parseFloat(blynkResponse.data.v1);
+      if (Number.isNaN(temperature) || Number.isNaN(humidity)) {
+        throw new Error("Blynk returned invalid numeric values");
+      }
+    } catch (blynkErr) {
+      const latest = await pool.query(
+        "SELECT temperature, humidity FROM sensor_tables ORDER BY timestamp DESC LIMIT 1"
+      );
+      if (!latest.rows.length) {
+        return res.status(500).json({
+          error: "No live sensor data available from Blynk and no fallback data in database",
+        });
+      }
+      source = "database-fallback";
+      temperature = parseFloat(latest.rows[0].temperature);
+      humidity = parseFloat(latest.rows[0].humidity);
+      console.error("⚠️ Blynk unavailable, using DB fallback:", blynkErr.message);
+    }
+
+    const condition = determineCondition(temperature, humidity);
+
+    const hour = new Date().getHours();
+    let predictedTemperature = null;
+
+    try {
+      const mlResponse = await axios.post("http://localhost:5001/predict", {
+        sensor_data: [[temperature, humidity, hour]],
+      });
+      const prediction = mlResponse?.data?.predictions;
+      if (Array.isArray(prediction) && prediction.length > 0) {
+        predictedTemperature = prediction[0];
+      }
+    } catch (mlErr) {
+      // Keep realtime condition available even if ML service is temporarily down.
+      console.error("⚠️ ML prediction skipped:", mlErr.message);
+    }
+
+    res.json({
+      source,
+      timestamp: new Date().toISOString(),
+      current: {
+        temperature,
+        humidity,
+        condition,
+      },
+      prediction: {
+        predictedTemperature,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error in /live-condition:", error.message);
+    res.status(500).json({ error: "Live condition fetch failed" });
+  }
+});
+
 module.exports = router;
